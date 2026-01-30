@@ -28,6 +28,8 @@ Some Codex runners restrict writing to your real home directory. Gemini CLI writ
 
 Important: Gemini CLI may use a web-based OAuth login flow that binds a local callback port. Some sandboxes disallow listening sockets, which can cause auth failures even if HOME is writable. In that case, run with network-enabled/escalated permissions to authenticate once, or configure API-key auth for Gemini CLI.
 
+Also note: some Gemini CLI versions can emit a complete JSON response and then hang/crash due to internal telemetry/session-cleanup errors. The bridge treats “timeout but already-emitted response” as success (with a warning) to keep the skill usable in sandboxed Codex runs.
+
 ## Quick start
 
 ```bash

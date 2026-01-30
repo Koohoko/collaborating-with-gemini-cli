@@ -786,11 +786,65 @@ def main() -> None:
 
     # If the subprocess timed out, return a deterministic envelope instead of
     # failing JSON parsing later.
+    #
+    # Note: Some Gemini CLI builds can emit a complete JSON response but then
+    # crash/hang due to internal telemetry/session cleanup errors. In that case,
+    # treat the already-emitted response as success (with warnings) so this skill
+    # remains usable in sandboxed Codex runs.
     if rc == 124:
-        result: Dict[str, Any] = {
+        meta_timeout = {**meta, "exit_code": rc, "timed_out": True}
+        timeout_warning = (
+            f"Gemini CLI timed out after --timeout-s={args.timeout_s}, but a response may have been emitted before the hang."
+        )
+
+        try:
+            if output_format == "json":
+                payload = _parse_single_json(stdout, stderr)
+                session_id = payload.get("session_id")
+                agent_messages = payload.get("response")
+                stats = payload.get("stats")
+
+                if isinstance(stats, dict):
+                    meta_timeout["stats"] = stats
+                prompt_tokens = _extract_prompt_tokens(stats if isinstance(stats, dict) else None, args.model)
+                if prompt_tokens is not None:
+                    meta_timeout["prompt_tokens"] = prompt_tokens
+                    meta_timeout["over_effective_context_limit"] = bool(prompt_tokens > args.effective_context_tokens)
+
+                if isinstance(session_id, str) and session_id and isinstance(agent_messages, str) and agent_messages.strip():
+                    meta_timeout.setdefault("warnings", []).append(timeout_warning)
+                    result: Dict[str, Any] = {"success": True, "SESSION_ID": session_id, "agent_messages": agent_messages, "meta": meta_timeout}
+                    if args.return_all_messages:
+                        result["all_messages"] = [payload]
+                    print(json.dumps(result, indent=2, ensure_ascii=False))
+                    return
+
+            else:
+                events = _parse_stream_json(stdout, stderr)
+                session_id = _extract_session_id(events)
+                agent_messages = _extract_agent_messages_from_stream(events)
+                stats = _extract_stats_from_stream(events)
+
+                if isinstance(stats, dict):
+                    meta_timeout["stats"] = stats
+                prompt_tokens = _extract_prompt_tokens(stats if isinstance(stats, dict) else None, args.model)
+                if prompt_tokens is not None:
+                    meta_timeout["prompt_tokens"] = prompt_tokens
+                    meta_timeout["over_effective_context_limit"] = bool(prompt_tokens > args.effective_context_tokens)
+
+                if session_id and agent_messages:
+                    meta_timeout.setdefault("warnings", []).append(timeout_warning)
+                    result = {"success": True, "SESSION_ID": session_id, "agent_messages": agent_messages, "meta": meta_timeout, "all_messages": events}
+                    print(json.dumps(result, indent=2, ensure_ascii=False))
+                    return
+        except Exception:
+            # Fall through to deterministic timeout error.
+            pass
+
+        result = {
             "success": False,
             "error": "Gemini CLI process timed out.",
-            "meta": {**meta, "exit_code": rc, "stdout": stdout.strip(), "stderr": stderr.strip()},
+            "meta": {**meta_timeout, "stdout": stdout.strip(), "stderr": stderr.strip()},
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
