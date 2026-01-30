@@ -49,32 +49,38 @@ After that, mention `collaborating-with-gemini-cli` (or `$collaborating-with-gem
 One-shot headless run:
 
 ```bash
-python scripts/gemini_cli_bridge.py --cd "/path/to/repo" --PROMPT "Review src/auth/login.py for bypasses; propose fixes as a unified diff."
+python3 scripts/gemini_cli_bridge.py --cd "/path/to/repo" --PROMPT "Review src/auth/login.py for bypasses; propose fixes as a unified diff."
 ```
 
 Recommended (explicit file scope):
 
 ```bash
-python scripts/gemini_cli_bridge.py --cd "/path/to/repo" --file "src/auth/login.py" --PROMPT "Review this file and propose a unified diff."
+python3 scripts/gemini_cli_bridge.py --cd "/path/to/repo" --file "src/auth/login.py" --PROMPT "Review this file and propose a unified diff."
 ```
 
 Multi-turn sessions (same `SESSION_ID`):
 
 ```bash
 # Turn 1
-python scripts/gemini_cli_bridge.py --cd "/repo" --file "src/auth/login.py" --PROMPT "List risks + propose patch."
+python3 scripts/gemini_cli_bridge.py --cd "/repo" --file "src/auth/login.py" --PROMPT "List risks + propose patch."
 
 # Turn 2 (resume)
-python scripts/gemini_cli_bridge.py --cd "/repo" --SESSION_ID "uuid-from-response" --PROMPT "Now propose tests for the patch."
+python3 scripts/gemini_cli_bridge.py --cd "/repo" --SESSION_ID "uuid-from-response" --PROMPT "Now propose tests for the patch."
 ```
 
 Allow edits (defaults to `auto_edit`; see `SKILL.md` for YOLO mode):
 
 ```bash
-python scripts/gemini_cli_bridge.py --full-access --cd "/repo" --file "src/foo.py" --PROMPT "Refactor for clarity; keep behavior; apply edits."
+python3 scripts/gemini_cli_bridge.py --full-access --cd "/repo" --file "src/foo.py" --PROMPT "Refactor for clarity; keep behavior; apply edits."
 ```
 
 For a complete parameter reference, output format, and guardrail behavior, see `SKILL.md`.
+
+## Codex sandbox note
+
+If you run this in a write-restricted runner/sandbox, Gemini CLI may fail writing to `~/.gemini` with `EPERM`. The bridge defaults to automatically using a writable sandbox HOME when needed (see `--gemini-home-mode` / `--gemini-home-base`).
+
+Gemini CLI's OAuth login flow may also require opening a local callback port; some sandboxes forbid listening sockets (`listen EPERM`). In that case, run with network-enabled/escalated permissions to authenticate once, or switch Gemini CLI to API key authentication.
 
 ## License
 

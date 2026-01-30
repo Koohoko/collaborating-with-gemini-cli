@@ -12,6 +12,7 @@ one-shot requests.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,119 @@ DEFAULT_EFFECTIVE_CONTEXT_TOKENS = 48_000
 
 # Heuristic: ~4 chars per token in many tokenizers. Used only for warnings.
 DEFAULT_MAX_FOCUS_BYTES = 200_000
+
+DEFAULT_GEMINI_HOME_MODE = "auto"  # auto|system|sandbox
+DEFAULT_GEMINI_HOME_BASE = "/tmp/codex-gemini-home"
+
+
+def _readable_path_env(name: str) -> Optional[str]:
+    val = os.environ.get(name)
+    if val is None:
+        return None
+    stripped = val.strip()
+    return stripped or None
+
+
+def _is_writable_dir(path: Path) -> bool:
+    try:
+        return bool(path.is_dir() and os.access(str(path), os.W_OK))
+    except OSError:
+        return False
+
+
+def _safe_gemini_home_for_cd(cd_path: Path, base: Path) -> Path:
+    digest = hashlib.sha256(str(cd_path.resolve()).encode("utf-8")).hexdigest()[:24]
+    return base / f"gemini-home-{digest}"
+
+
+def _copy_if_newer(src: Path, dst: Path) -> None:
+    if not src.is_file():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+            shutil.copy2(src, dst)
+    except OSError:
+        # Best effort only; missing auth may force re-login.
+        pass
+
+
+def _sync_gemini_state(*, system_home: Path, sandbox_home: Path) -> None:
+    """
+    Make Gemini CLI usable when HOME isn't writable by copying auth/config into a writable HOME.
+
+    Gemini CLI stores state under ~/.gemini by default; we copy a small allowlist of
+    auth/config files (not large profiles/history).
+    """
+    sandbox_home.mkdir(parents=True, exist_ok=True)
+
+    src_root = system_home / ".gemini"
+    if not src_root.is_dir():
+        return
+
+    dst_root = sandbox_home / ".gemini"
+    dst_root.mkdir(parents=True, exist_ok=True)
+
+    # Common top-level state/auth files.
+    for filename in (
+        "oauth_creds.json",
+        "settings.json",
+        "settings.json.orig",
+        "state.json",
+        "google_accounts.json",
+        "installation_id",
+        "user_id",
+        ".env",
+    ):
+        _copy_if_newer(src_root / filename, dst_root / filename)
+
+    # Minimal subset of ~/.gemini/antigravity sometimes referenced by the CLI.
+    src_ag = src_root / "antigravity"
+    if src_ag.is_dir():
+        dst_ag = dst_root / "antigravity"
+        dst_ag.mkdir(parents=True, exist_ok=True)
+        for filename in ("installation_id", "mcp_config.json", "onboarding.json", "user_settings.pb"):
+            _copy_if_newer(src_ag / filename, dst_ag / filename)
+
+
+def _apply_gemini_home_mode(
+    env: Dict[str, str],
+    *,
+    cd_path: Path,
+    home_mode: str,
+    home_base: Path,
+) -> Dict[str, str]:
+    """
+    Ensure Gemini CLI has a writable HOME for ~/.gemini writes under sandboxed runners.
+
+    - system: do not modify HOME/XDG paths
+    - sandbox: force a writable home under `home_base`
+    - auto: use sandbox home if the current HOME isn't writable
+    """
+    mode = (home_mode or DEFAULT_GEMINI_HOME_MODE).strip().lower()
+    if mode not in {"auto", "system", "sandbox"}:
+        mode = DEFAULT_GEMINI_HOME_MODE
+
+    if mode == "system":
+        return env
+
+    current_home = Path(env.get("HOME", str(Path.home()))).expanduser()
+    needs_sandbox = mode == "sandbox" or not _is_writable_dir(current_home)
+    if not needs_sandbox:
+        return env
+
+    sandbox_home = _safe_gemini_home_for_cd(cd_path, home_base)
+
+    # Copy auth/config from the real system home (readable in Codex) so Gemini stays logged in.
+    system_home = Path(os.path.expanduser("~"))
+    _sync_gemini_state(system_home=system_home, sandbox_home=sandbox_home)
+
+    updated = env.copy()
+    updated["HOME"] = str(sandbox_home)
+    updated["XDG_CONFIG_HOME"] = str(sandbox_home / ".config")
+    updated["XDG_STATE_HOME"] = str(sandbox_home / ".state")
+    updated["XDG_CACHE_HOME"] = str(sandbox_home / ".cache")
+    return updated
 
 
 def _get_windows_npm_paths() -> List[Path]:
@@ -98,8 +212,9 @@ def _run(
     cwd: Optional[Path],
     *,
     stdin_text: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str, str]:
-    env = os.environ.copy()
+    env = (env or os.environ.copy()).copy()
     _augment_path_env(env)
     cmd = cmd.copy()
     cmd[0] = _resolve_executable(cmd[0], env)
@@ -419,6 +534,21 @@ def main() -> None:
     )
     parser.add_argument("--timeout-s", type=float, default=1800.0, help="Process timeout in seconds. Defaults to 1800 (30 minutes).")
     parser.add_argument("--gemini-bin", default="gemini", help="Gemini CLI executable name/path. Defaults to `gemini`.")
+    parser.add_argument(
+        "--gemini-home-mode",
+        choices=["auto", "system", "sandbox"],
+        default=_readable_path_env("CODEX_GEMINI_HOME_MODE") or DEFAULT_GEMINI_HOME_MODE,
+        help=(
+            "Where Gemini CLI should store its per-run state/config (e.g. ~/.gemini). "
+            "Default: auto (use sandbox HOME if current HOME isn't writable). "
+            "Set to system to preserve the current HOME, or sandbox to force a writable HOME under --gemini-home-base."
+        ),
+    )
+    parser.add_argument(
+        "--gemini-home-base",
+        default=_readable_path_env("CODEX_GEMINI_HOME_BASE") or DEFAULT_GEMINI_HOME_BASE,
+        help=f"Base directory for sandbox Gemini HOME (default: {DEFAULT_GEMINI_HOME_BASE}).",
+    )
 
     # Guardrails for effective context + file scoping
     parser.add_argument(
@@ -611,7 +741,15 @@ def main() -> None:
     cmd.append(prompt)
 
     try:
-        rc, stdout, stderr = _run(cmd, timeout_s=args.timeout_s, cwd=cd_path)
+        base_env = os.environ.copy()
+        _augment_path_env(base_env)
+        base_env = _apply_gemini_home_mode(
+            base_env,
+            cd_path=cd_path,
+            home_mode=str(args.gemini_home_mode),
+            home_base=Path(str(args.gemini_home_base)).expanduser(),
+        )
+        rc, stdout, stderr = _run(cmd, timeout_s=args.timeout_s, cwd=cd_path, env=base_env)
     except FileNotFoundError as error:
         print(
             json.dumps(
@@ -626,6 +764,25 @@ def main() -> None:
         return
 
     meta["exit_code"] = rc
+
+    # Gemini CLI may try to perform a web-based OAuth flow by binding a local port.
+    # Some sandboxed runners disallow listening sockets, causing EPERM. Surface an
+    # actionable error before attempting JSON parsing (Gemini may also crash and emit non-JSON).
+    combined_err = "\n".join([stderr.strip(), stdout.strip()]).strip()
+    if rc != 0 and "Error authenticating" in combined_err and "listen EPERM" in combined_err:
+        result = {
+            "success": False,
+            "error": (
+                "Gemini CLI authentication failed because it attempted a web-based OAuth flow that binds a local port, "
+                "but the current sandbox disallows listening sockets (EPERM).\n\n"
+                "Workarounds:\n"
+                "- Run this skill with network-enabled/escalated permissions and authenticate once.\n"
+                "- Or configure Gemini CLI to use API key auth (so no local OAuth callback server is needed).\n"
+            ).strip(),
+            "meta": {**meta, "stdout": stdout.strip(), "stderr": stderr.strip()},
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
 
     # If the subprocess timed out, return a deterministic envelope instead of
     # failing JSON parsing later.

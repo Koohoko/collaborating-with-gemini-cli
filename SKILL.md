@@ -18,6 +18,16 @@ Compared to `collaborating-with-claude-code`, this skill defaults to **read-only
 - Gemini CLI authenticated (Google account login or API key auth, depending on your local setup).
 - Python 3 (to run the bridge script).
 
+## Codex sandbox notes
+
+Some Codex runners restrict writing to your real home directory. Gemini CLI writes to `~/.gemini`, so the bridge defaults to using a writable sandbox HOME when the current `HOME` isn't writable.
+
+- Default behavior: `--gemini-home-mode auto`
+- Override: `--gemini-home-mode system` (use the current HOME) or `--gemini-home-mode sandbox` (force sandbox HOME)
+- Base dir: `--gemini-home-base` (default: `/tmp/codex-gemini-home`)
+
+Important: Gemini CLI may use a web-based OAuth login flow that binds a local callback port. Some sandboxes disallow listening sockets, which can cause auth failures even if HOME is writable. In that case, run with network-enabled/escalated permissions to authenticate once, or configure API-key auth for Gemini CLI.
+
 ## Quick start
 
 ```bash

@@ -48,32 +48,38 @@ ls -la ~/.codex/skills/collaborating-with-gemini-cli
 最简单的一次性调用：
 
 ```bash
-python scripts/gemini_cli_bridge.py --cd "/path/to/repo" --PROMPT "Review src/auth/login.py for bypasses; propose fixes as a unified diff."
+python3 scripts/gemini_cli_bridge.py --cd "/path/to/repo" --PROMPT "Review src/auth/login.py for bypasses; propose fixes as a unified diff."
 ```
 
 推荐（明确指定 focus files；默认建议 5 个文件以内，更贴合 effective-context 约束）：
 
 ```bash
-python scripts/gemini_cli_bridge.py --cd "/path/to/repo" --file "src/auth/login.py" --PROMPT "Review this file and propose a unified diff."
+python3 scripts/gemini_cli_bridge.py --cd "/path/to/repo" --file "src/auth/login.py" --PROMPT "Review this file and propose a unified diff."
 ```
 
 多轮会话（同一 `SESSION_ID`）：
 
 ```bash
 # Turn 1
-python scripts/gemini_cli_bridge.py --cd "/repo" --file "src/auth/login.py" --PROMPT "List risks + propose patch."
+python3 scripts/gemini_cli_bridge.py --cd "/repo" --file "src/auth/login.py" --PROMPT "List risks + propose patch."
 
 # Turn 2 (resume)
-python scripts/gemini_cli_bridge.py --cd "/repo" --SESSION_ID "uuid-from-response" --PROMPT "Now propose tests for the patch."
+python3 scripts/gemini_cli_bridge.py --cd "/repo" --SESSION_ID "uuid-from-response" --PROMPT "Now propose tests for the patch."
 ```
 
 允许改文件（默认 `auto_edit`；更危险的 YOLO 见 `SKILL.md`）：
 
 ```bash
-python scripts/gemini_cli_bridge.py --full-access --cd "/repo" --file "src/foo.py" --PROMPT "Refactor for clarity; keep behavior; apply edits."
+python3 scripts/gemini_cli_bridge.py --full-access --cd "/repo" --file "src/foo.py" --PROMPT "Refactor for clarity; keep behavior; apply edits."
 ```
 
 更完整的参数说明、输出格式与 guardrails 见 `SKILL.md`。
+
+## Codex sandbox note
+
+如果你在写入受限的 runner/sandbox 里运行（例如某些 Codex 环境），Gemini CLI 可能无法写入 `~/.gemini` 导致 `EPERM`。bridge 脚本默认会在需要时自动切换到一个可写的 sandbox HOME（见 `--gemini-home-mode`/`--gemini-home-base`）。
+
+另外，Gemini CLI 的 OAuth 登录流程可能需要在本机开启一个回调端口；部分 sandbox 会禁止监听端口（`listen EPERM`）。这种情况下需要使用 network-enabled/escalated 权限先完成一次认证，或切换到 API key 认证方式。
 
 ## License
 
